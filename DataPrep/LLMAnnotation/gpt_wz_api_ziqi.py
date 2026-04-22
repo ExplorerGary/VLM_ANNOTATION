@@ -67,6 +67,8 @@ def parse_args():
     b.add_argument("-s", "--scenario", required=True, help="Scenario prefix/full, e.g. S1 or S1_normal")
     b.add_argument("--data-root", default=None, help="Dataset root for WhereIsData")
     b.add_argument("--gaze-csv-dir", default=DEFAULT_GAZE_CSV_DIR)
+    b.add_argument("--gaze-csv-file", default=None, help="Explicit gaze CSV path (supports sliced CSV)")
+    b.add_argument("--prefer-sliced", action="store_true", help="Prefer *_merged_gaze_labelled_sliced.csv when auto matching")
     b.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     b.add_argument("--model", default=DEFAULT_MODEL)
     b.add_argument("--image-size", type=int, default=IMAGE_SIZE)
@@ -94,6 +96,8 @@ def parse_args():
     r.add_argument("-s", "--scenario", required=True, help="Scenario prefix/full, e.g. S1 or S1_normal")
     r.add_argument("--data-root", default=None, help="Dataset root for WhereIsData")
     r.add_argument("--gaze-csv-dir", default=DEFAULT_GAZE_CSV_DIR)
+    r.add_argument("--gaze-csv-file", default=None, help="Explicit gaze CSV path (supports sliced CSV)")
+    r.add_argument("--prefer-sliced", action="store_true", help="Prefer *_merged_gaze_labelled_sliced.csv when auto matching")
     r.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     r.add_argument("--model", default=DEFAULT_MODEL)
     r.add_argument("--image-size", type=int, default=IMAGE_SIZE)
@@ -132,7 +136,22 @@ def _normalize_scenario_prefix(s: str) -> str:
     return f"S{int(first_u)}"
 
 
-def _find_labelled_csv(gaze_csv_dir: str, participant: str, scenario_arg: str) -> tuple[Path, str]:
+def _parse_scenario_from_csv_name(csv_name: str) -> str:
+    m = re.match(
+        r"^(P\d+)_(S\d+_[^_]+)_merged_gaze_labelled(?:_sliced)?\.csv$",
+        csv_name,
+    )
+    if not m:
+        raise ValueError(f"Unexpected labelled CSV name format: {csv_name}")
+    return m.group(2)
+
+
+def _find_labelled_csv(
+    gaze_csv_dir: str,
+    participant: str,
+    scenario_arg: str,
+    prefer_sliced: bool = False,
+) -> tuple[Path, str]:
     base = Path(gaze_csv_dir)
     if not base.exists():
         raise FileNotFoundError(f"Gaze CSV directory not found: {base}")
@@ -143,24 +162,54 @@ def _find_labelled_csv(gaze_csv_dir: str, participant: str, scenario_arg: str) -
         scenario_glob = s
         if not scenario_glob.startswith("S"):
             scenario_glob = f"{scenario_prefix}_{s.split('_', 1)[1]}"
-        pattern = f"{participant}_{scenario_glob}_merged_gaze_labelled.csv"
+        candidates = [
+            f"{participant}_{scenario_glob}_merged_gaze_labelled_sliced.csv",
+            f"{participant}_{scenario_glob}_merged_gaze_labelled.csv",
+        ]
     else:
         scenario_prefix = _normalize_scenario_prefix(s)
-        pattern = f"{participant}_{scenario_prefix}_*_merged_gaze_labelled.csv"
+        candidates = [
+            f"{participant}_{scenario_prefix}_*_merged_gaze_labelled_sliced.csv",
+            f"{participant}_{scenario_prefix}_*_merged_gaze_labelled.csv",
+        ]
 
-    matches = sorted(base.glob(pattern))
+    if not prefer_sliced:
+        candidates = list(reversed(candidates))
+
+    matches = []
+    for pattern in candidates:
+        matches = sorted(base.glob(pattern))
+        if matches:
+            break
+
     if not matches:
-        raise FileNotFoundError(f"No labelled gaze CSV matched: {pattern} under {base}")
+        raise FileNotFoundError(f"No labelled gaze CSV matched any of {candidates} under {base}")
     if len(matches) > 1:
         raise RuntimeError(f"Multiple gaze CSV matched {pattern}: {[m.name for m in matches]}")
 
     matched = matches[0]
-    m = re.match(r"^(P\d+)_(S\d+_[^_]+)_merged_gaze_labelled\.csv$", matched.name)
-    if not m:
-        raise ValueError(f"Unexpected labelled CSV name format: {matched.name}")
-
-    scenario_full = m.group(2)
+    scenario_full = _parse_scenario_from_csv_name(matched.name)
     return matched, scenario_full
+
+
+def _resolve_labelled_csv_from_args(args, participant: str) -> tuple[Path, str]:
+    if args.gaze_csv_file:
+        p = Path(args.gaze_csv_file)
+        if not p.exists():
+            raise FileNotFoundError(f"Explicit gaze csv not found: {p}")
+        scenario_full = _parse_scenario_from_csv_name(p.name)
+        if not p.name.startswith(f"{participant}_"):
+            raise ValueError(
+                f"Participant mismatch: --participant {participant} but csv is {p.name}"
+            )
+        return p, scenario_full
+
+    return _find_labelled_csv(
+        args.gaze_csv_dir,
+        participant,
+        args.scenario,
+        prefer_sliced=args.prefer_sliced,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +270,35 @@ def _nearest_gaze_target(ts: float, sorted_ts: list[float], ts_to_label: dict[st
     return ts_to_label.get(f"{best:.6f}", "uncertain")
 
 
+def _pick_closest_merged_frames(
+    merged_items: list[tuple[float, str]],
+    desired_ts: list[float],
+    tol: float,
+) -> list[tuple[float, str]]:
+    if not merged_items or not desired_ts:
+        return []
+
+    merged_items = sorted(merged_items, key=lambda x: x[0])
+    merged_ts = [x[0] for x in merged_items]
+    chosen_idx = set()
+
+    for target_ts in desired_ts:
+        pos = bisect_left(merged_ts, target_ts)
+        candidates = []
+        if pos < len(merged_ts):
+            candidates.append(pos)
+        if pos > 0:
+            candidates.append(pos - 1)
+        if not candidates:
+            continue
+
+        best_i = min(candidates, key=lambda i: abs(merged_ts[i] - target_ts))
+        if abs(merged_ts[best_i] - target_ts) <= tol:
+            chosen_idx.add(best_i)
+
+    return [merged_items[i] for i in sorted(chosen_idx)]
+
+
 def _resolve_targets(
     participant: str,
     scenario_full: str,
@@ -238,11 +316,19 @@ def _resolve_targets(
     merged_paths = sorted({e["merged_img"] for e in entries})
     sorted_ts, ts_to_label = _load_labelled_gaze_map(gaze_csv_path)
 
-    targets = []
+    merged_items = []
     for image_path in merged_paths:
         ts = _parse_ts_from_merged_name(os.path.basename(image_path))
         if ts is None:
             continue
+        merged_items.append((ts, image_path))
+
+    use_sliced_mode = gaze_csv_path.name.endswith("_merged_gaze_labelled_sliced.csv")
+    if use_sliced_mode:
+        merged_items = _pick_closest_merged_frames(merged_items, sorted_ts, tolerance)
+
+    targets = []
+    for ts, image_path in merged_items:
         gaze_target = _nearest_gaze_target(ts, sorted_ts, ts_to_label, tolerance)
         targets.append(
             {
@@ -295,9 +381,10 @@ def _make_request(
     max_tokens: int,
     json_mode: bool,
 ) -> dict:
+    token_field = "max_completion_tokens" if model.lower().startswith("gpt-5") else "max_tokens"
     body = {
         "model": model,
-        "max_tokens": max_tokens,
+        token_field: max_tokens,
         "messages": [
             {"role": "system", "content": system_msg},
             {
@@ -350,7 +437,7 @@ def parse_custom_id(custom_id: str) -> dict:
 # ---------------------------------------------------------------------------
 def cmd_build(args):
     participant = _normalize_participant(args.participant)
-    gaze_csv_path, scenario_full = _find_labelled_csv(args.gaze_csv_dir, participant, args.scenario)
+    gaze_csv_path, scenario_full = _resolve_labelled_csv_from_args(args, participant)
 
     print(f"Resolved labelled gaze CSV: {gaze_csv_path}")
     print(f"Resolved scenario: {scenario_full}")
@@ -592,9 +679,10 @@ def cmd_collect(args):
 
 
 def _call_api(client, model, system_msg, user_msg, b64_image, detail, max_tokens, json_mode=True):
+    token_field = "max_completion_tokens" if model.lower().startswith("gpt-5") else "max_tokens"
     kwargs = {
         "model": model,
-        "max_tokens": max_tokens,
+        token_field: max_tokens,
         "messages": [
             {"role": "system", "content": system_msg},
             {
@@ -635,7 +723,7 @@ def cmd_run(args):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     participant = _normalize_participant(args.participant)
-    gaze_csv_path, scenario_full = _find_labelled_csv(args.gaze_csv_dir, participant, args.scenario)
+    gaze_csv_path, scenario_full = _resolve_labelled_csv_from_args(args, participant)
 
     print(f"Resolved labelled gaze CSV: {gaze_csv_path}")
     print(f"Resolved scenario: {scenario_full}")

@@ -191,15 +191,8 @@ def _extract_red_values_for_rows(
     rows: List[Dict[str, str]],
     size_cache: Dict[str, Tuple[int, int]],
     gaze_space: Optional[Tuple[int, int]],
-) -> bool:
-    try:
-        img_obj = Image.open(seg_path)
-    except (OSError, FileNotFoundError):
-        for row in rows:
-            row["gaze_target"] = "unknown"
-        return False
-
-    with img_obj as img:
+) -> None:
+    with Image.open(seg_path) as img:
         rgb = img.convert("RGB")
         seg_width, seg_height = rgb.size
         pixels = rgb.load()
@@ -234,8 +227,6 @@ def _extract_red_values_for_rows(
 
             red_value = pixels[x, y][0]
             row["gaze_target"] = str(ColorDecoder.decode_red(red_value))
-
-    return True
 
 
 def _load_mapping_json(path: str) -> Dict:
@@ -314,7 +305,6 @@ def generate_gaze_target_csvs(
     mapping_json_path: str = BIND_JSON_PATH,
     output_dir: str = OUT_DIR,
     data_root: Optional[str] = None,
-    overwrite: bool = False,
 ) -> Dict[str, int]:
     where = WhereIsData(data_root=data_root)
     payload = _load_mapping_json(mapping_json_path)
@@ -327,8 +317,6 @@ def generate_gaze_target_csvs(
     error_count = 0
     unknown_count = 0
     unresolved_raw_mapping = 0
-    skipped_existing_files = 0
-    image_read_failures = 0
     size_cache: Dict[str, Tuple[int, int]] = {}
 
     participant_items = list(participants.items())
@@ -336,12 +324,6 @@ def generate_gaze_target_csvs(
         scenarios = p_block.get("scenarios", {})
         scenario_items = list(scenarios.items())
         for scenario, s_block in tqdm(scenario_items, desc=f"{participant} scenarios", leave=False):
-            output_name = f"{participant}_{scenario}_merged_gaze.csv"
-            output_path = os.path.join(output_dir, output_name)
-            if (not overwrite) and os.path.isfile(output_path):
-                skipped_existing_files += 1
-                continue
-
             mapping_block = s_block.get("mapping", {})
             if not mapping_block:
                 continue
@@ -418,15 +400,15 @@ def generate_gaze_target_csvs(
                     for row in seg_rows:
                         row["gaze_target"] = "unknown"
                     continue
-                ok = _extract_red_values_for_rows(seg_path, seg_rows, size_cache, gaze_space)
-                if not ok:
-                    image_read_failures += 1
+                _extract_red_values_for_rows(seg_path, seg_rows, size_cache, gaze_space)
 
             for row in rows:
                 if row.get("gaze_target") == "unknown":
                     unknown_count += 1
                 row.pop("_merged_path", None)
 
+            output_name = f"{participant}_{scenario}_merged_gaze.csv"
+            output_path = os.path.join(output_dir, output_name)
             _write_csv(output_path, rows, fieldnames)
 
             file_count += 1
@@ -438,8 +420,6 @@ def generate_gaze_target_csvs(
         "errors": error_count,
         "unknown_rows": unknown_count,
         "unresolved_raw_mapping": unresolved_raw_mapping,
-        "skipped_existing_files": skipped_existing_files,
-        "image_read_failures": image_read_failures,
     }
 
 
