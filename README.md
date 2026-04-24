@@ -97,6 +97,9 @@ python .\vlm-workzone\DataPrep\LLMAnnotation\data_slicer.py --participant P2 --f
 
 ```
 
+加入 `--prefer-sliced` 可以帮助你优先使用第 4 步切片后的数据，避免误用未切片的输入文件。
+
+
 ## In a Nutshell
 
 `merged与seg绑定 -> 解码语义idx -> idx cluster到我们的label -> 切出需要的帧 -> LLM标注`
