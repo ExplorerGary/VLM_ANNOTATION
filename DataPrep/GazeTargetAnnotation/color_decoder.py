@@ -1,3 +1,4 @@
+import argparse
 import csv
 import json
 import os
@@ -234,6 +235,27 @@ def _load_mapping_json(path: str) -> Dict:
         return json.load(f)
 
 
+def _normalize_participant(value: str) -> str:
+    token = str(value).strip().upper()
+    if token.startswith("P"):
+        token = token[1:]
+    if not token.isdigit():
+        raise ValueError(f"Invalid participant: {value}")
+    return f"P{int(token)}"
+
+
+def _normalize_scenario_prefix(value: str) -> str:
+    token = str(value).strip()
+    if "_" in token:
+        token = token.split("_", 1)[0]
+    token = token.upper()
+    if token.startswith("S"):
+        token = token[1:]
+    if not token.isdigit():
+        raise ValueError(f"Invalid scenario: {value}")
+    return f"S{int(token)}"
+
+
 def _build_ui_to_seg_index(mapping_block: Dict[str, str]) -> Dict[str, str]:
     ui_to_seg: Dict[str, str] = {}
     for seg_path, merged_path in mapping_block.items():
@@ -305,10 +327,20 @@ def generate_gaze_target_csvs(
     mapping_json_path: str = BIND_JSON_PATH,
     output_dir: str = OUT_DIR,
     data_root: Optional[str] = None,
+    participant_filter: Optional[str] = None,
+    scenario_filter: Optional[str] = None,
 ) -> Dict[str, int]:
     where = WhereIsData(data_root=data_root)
     payload = _load_mapping_json(mapping_json_path)
     participants = payload.get("participants", {})
+
+    normalized_participant = _normalize_participant(participant_filter) if participant_filter else None
+    normalized_scenario_prefix = _normalize_scenario_prefix(scenario_filter) if scenario_filter else None
+
+    if normalized_participant and normalized_participant not in participants:
+        raise ValueError(
+            f"Participant {normalized_participant} not found in mapping json: {mapping_json_path}"
+        )
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -321,9 +353,15 @@ def generate_gaze_target_csvs(
 
     participant_items = list(participants.items())
     for participant, p_block in tqdm(participant_items, desc="Participants"):
+        if normalized_participant and participant != normalized_participant:
+            continue
+
         scenarios = p_block.get("scenarios", {})
         scenario_items = list(scenarios.items())
         for scenario, s_block in tqdm(scenario_items, desc=f"{participant} scenarios", leave=False):
+            if normalized_scenario_prefix and not scenario.startswith(normalized_scenario_prefix + "_"):
+                continue
+
             mapping_block = s_block.get("mapping", {})
             if not mapping_block:
                 continue
@@ -423,8 +461,49 @@ def generate_gaze_target_csvs(
     }
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Decode gaze target class IDs from segmentation into *_merged_gaze.csv"
+    )
+    parser.add_argument(
+        "-p",
+        "--participant",
+        default=None,
+        help="Optional participant filter, e.g. P8 or 8",
+    )
+    parser.add_argument(
+        "-s",
+        "--scenario",
+        default=None,
+        help="Optional scenario filter, e.g. S1 or S1_normal (prefix matching)",
+    )
+    parser.add_argument(
+        "--mapping-json",
+        default=BIND_JSON_PATH,
+        help="Path to bind_output mapping json",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=OUT_DIR,
+        help="Directory for *_merged_gaze.csv outputs",
+    )
+    parser.add_argument(
+        "--data-root",
+        default=None,
+        help="Optional dataset root for WhereIsData",
+    )
+    return parser.parse_args()
+
+
 def main():
-    report = generate_gaze_target_csvs()
+    args = parse_args()
+    report = generate_gaze_target_csvs(
+        mapping_json_path=args.mapping_json,
+        output_dir=args.output_dir,
+        data_root=args.data_root,
+        participant_filter=args.participant,
+        scenario_filter=args.scenario,
+    )
     print("Gaze target generation finished")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
