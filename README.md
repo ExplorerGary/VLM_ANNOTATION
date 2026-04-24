@@ -95,6 +95,8 @@ python .\vlm-workzone\DataPrep\LLMAnnotation\data_slicer.py --participant P2 --f
 
 - `vlm-workzone/DataPrep/LLMAnnotation/annotation_outputs/workzone_gpt/`
 
+```
+
 ## In a Nutshell
 
 `merged与seg绑定 -> 解码语义idx -> idx cluster到我们的label -> 切出需要的帧 -> LLM标注`
