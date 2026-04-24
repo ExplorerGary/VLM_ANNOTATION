@@ -47,10 +47,10 @@ from pathlib import Path
 
 OUTPUT_LABELS = [
     "road center", 
-    "workzone element", 
-    "cone", 
+    "workzone element", # worker and woker's cone in his hand
+    "cone", # fixed cone on the ground, it's carla's own object, and it's "dynamic" class
     "vehicle", 
-    "traffic sign",
+    "traffic sign", # workzone的路牌
     "traffic light", 
     "uncertain", 
     "irrelevant"

@@ -23,6 +23,13 @@ MERGED_NAME_PATTERN = re.compile(r"^merged_(\d+(?:\.\d+)?)\.[^.]+$", re.IGNORECA
 FRONT_NAME_PATTERN = re.compile(r"^camera_(\d+)\.[^.]+$", re.IGNORECASE)
 
 
+def _broadcast_model(model: str, command: str):
+	bar = "=" * 72
+	print(bar)
+	print(f"[MODEL BROADCAST] command={command} model={model}")
+	print(bar)
+
+
 def _parse_ts_from_merged_name(name: str):
 	m = MERGED_NAME_PATTERN.match(name)
 	return float(m.group(1)) if m else None
@@ -309,6 +316,7 @@ def _call_api(
 def cmd_build(args):
 	participant = base._normalize_participant(args.participant)
 	gaze_csv_path, scenario_full = base._resolve_labelled_csv_from_args(args, participant)
+	_broadcast_model(args.model, "build")
 
 	print(f"Resolved labelled gaze CSV: {gaze_csv_path}")
 	print(f"Resolved scenario: {scenario_full}")
@@ -488,6 +496,7 @@ def cmd_run(args):
 
 	participant = base._normalize_participant(args.participant)
 	gaze_csv_path, scenario_full = base._resolve_labelled_csv_from_args(args, participant)
+	_broadcast_model(args.model, "run")
 
 	print(f"Resolved labelled gaze CSV: {gaze_csv_path}")
 	print(f"Resolved scenario: {scenario_full}")
@@ -503,6 +512,7 @@ def cmd_run(args):
 
 	print(f"Resolved {len(targets)} multi targets (front + merged).")
 	print(f"Total API calls: {len(targets) * 2} (freedom + structured)")
+	print(f"Running Inference with model {args.model} ...")
 
 	client = base.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 	freedom_prompt = base.LLMPrompt(seed="FREEDOM")
